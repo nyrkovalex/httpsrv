@@ -1,0 +1,23 @@
+#!/bin/sh
+
+# source in case of recent changes
+. ~/.bashrc
+
+SRC_PATH=.
+
+TEST_PATH=.
+TEST_PATTERN=*_test.py
+TEST_CMD='./run test'
+
+ENVS_PATH=~/.envs
+
+case $1 in
+  test)
+    python -m unittest discover -s $TEST_PATH -p $TEST_PATTERN
+  ;;
+
+  watch)
+    watchmedo shell-command --patterns='*.py' --ignore-directories --recursive --command="$TEST_CMD" -W $SRC_PATH
+  ;;
+
+esac

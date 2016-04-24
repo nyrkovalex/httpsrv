@@ -164,6 +164,9 @@ class Server:
         '''
         Starts a server on the port provided in the :class:`Server` constructor
         in a separate thread
+
+        :rtype: Server
+        :returns: server instance for chaining
         '''
         self._handler = _create_handler_class(self._rules)
         self._server = HTTPServer(('', self._port), self._handler)

@@ -1,6 +1,5 @@
 import json
 
-from contextlib import contextmanager
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -10,52 +9,76 @@ class PendingRequestsLeftException(Exception):
 
 
 class Rule:
-    def __init__(self, server, method, url, data=None):
-        self._server = server
+    def __init__(self, method, path, headers=None, text=None):
         self.method = method
-        self.url = url
-        self.data = data
+        self.path = path
+        self.data = text.encode('utf-8') if text else None
         self.response = None
-        self.headers = None
-
-    def respond(self, text, headers=None):
         self.headers = headers or {}
-        self.response = text
-        return self._server
+        self.code = 200
 
-    def json(self, json_doc, headers=None):
+    def status(self, status, headers=None):
+        self.code = status
+        self.headers.update(headers or {})
+
+    def text(self, text, status=None, headers=None):
+        self.status(status or self.code, headers)
+        self.response = text.encode('utf-8')
+
+    def json(self, json_doc, status=None, headers=None):
         headers = headers or {}
         if 'content-type' not in headers:
             headers['content-type'] = 'application/json'
-        return self.respond(json.dumps(json_doc), headers)
+        return self.text(json.dumps(json_doc), status, headers)
 
-    def matches(self, method, url, data):
-        print('matching', method, url, data)
-        return self.method == method and self.url == url and self.data == data
+    def matches(self, method, path, data):
+        return self.method == method and self.path == path and self.data == data
 
 
 class Server:
+    '''
+    Tunable HTTP server running in a parallel thread.
+
+    Example usage (using `requests` library)::
+        server = Server(8080).start()
+        server.on('GET', '/').text('hello')
+        res = requests.get('http://localhost:8080')
+        assert res.text == 'hello'
+    '''
+
     def __init__(self, port):
+        '''
+        Creates an instance of :class:`Server`
+
+        :param port: port this server will listen to after :func:`Server.start` is called
+        '''
         self._port = port
         self._rules = []
         self._thread = None
         self._server = None
+        self._handler = None
         self.running = False
 
-    def on_get(self, url):
-        rule = Rule(self, 'GET', url)
-        self._rules.append(rule)
-        return rule
+    def on(self, method, path, headers=None, text=None):
+        '''
+        Defines a rule expectation — after recieving a request with matching parameters
+        target response will be sent
 
-    def on_post(self, url, data=None):
-        rule = Rule(self, 'POST', url, data)
+        :param method: request method: `'GET'`, `'POST'`, etc. can be some custom string
+        :param path: request path including query parameters
+        :param headers: (optional) dictionary of headers to expect.
+            All keys must be lowercase, e.g. `'content-type'`
+        :param text: (optional) response text to expect
+        '''
+        rule = Rule(method, path, headers, text)
         self._rules.append(rule)
+        if method not in self._handler.known_methods:
+            self._handler.add_method(method)
         return rule
-
 
     def start(self):
-        handler_class = create_handler_class(self._rules)
-        self._server = HTTPServer(('', self._port), handler_class)
+        self._handler = create_handler_class(self._rules)
+        self._server = HTTPServer(('', self._port), self._handler)
         self._thread = Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         self.running = True
@@ -67,13 +90,6 @@ class Server:
         self._thread.join()
         self.running = False
 
-    @contextmanager
-    def run(self):
-        try:
-            yield self.start()
-        finally:
-            self.stop()
-
     def reset(self):
         self._rules.clear()
 
@@ -83,20 +99,29 @@ class Server:
 
 
 def create_handler_class(rules):
-
     class Handler(BaseHTTPRequestHandler):
+        known_methods = set()
+
+        @classmethod
+        def add_method(cls, method):
+            if method in cls.known_methods:
+                return
+            func = lambda self: cls._handle(self, method)
+            setattr(cls, 'do_' + method, func)
+            cls.known_methods.add(method)
+
         def _read_body(self):
             if 'content-length' in self.headers:
                 length = int(self.headers['content-length'])
-                return self.rfile.read(length).decode('utf-8') if length > 0 else None
+                return self.rfile.read(length) if length > 0 else None
             return None
 
         def _respond(self, rule):
-            self.send_response(200)
+            self.send_response(rule.code)
             for key, value in rule.headers.items():
                 self.send_header(key, value)
             self.end_headers()
-            self.wfile.write(rule.response.encode('utf-8'))
+            self.wfile.write(rule.response)
 
         def _handle(self, method):
             body = self._read_body()
@@ -108,15 +133,7 @@ def create_handler_class(rules):
             self._respond(rule)
             rules.remove(rule)
 
-        def do_GET(self):
-            return self._handle('GET')
-
-        def do_POST(self):
-            return self._handle('POST')
-
+    for rule in rules:
+        Handler.add_method(rule.method)
 
     return Handler
-
-
-def listen(port):
-    return Server(port)

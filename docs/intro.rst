@@ -8,6 +8,7 @@ Example usage
 -------------
 
 Using requests_ library::
+
     >>> import requests
     >>> from httpsrv import Server
     >>> server = Server(8080).start()

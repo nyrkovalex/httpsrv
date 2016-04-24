@@ -1,6 +1,6 @@
-SRC_PATH = .
+SRC_PATH = httpsrv
 
-TEST_PATH = .
+TEST_PATH = test
 TEST_PATTERN = *_test.py
 TEST_CMD = make test
 DOCS_PATH = docs
@@ -25,3 +25,7 @@ watch-docs:
 .PHONY: docs
 docs:
 	$(DOCS_CMD)
+
+.PHONY: upload-test
+upload-test:
+	python setup.py bdist_wheel upload -r https://testpypi.python.org/pypi

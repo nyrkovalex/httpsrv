@@ -3,7 +3,7 @@
 Httpsrv
 =======
 
-Simple http server for API mocking
+Simple http server for API mocking during automated testing
 
 
 Example usage

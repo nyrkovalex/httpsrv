@@ -104,7 +104,7 @@ class Rule:
         :param path: request path including query parameters,
             e.g. ``'/users?name=John%20Doe'``
 
-        :type bytes:
+        :type data: bytes
         :param data: request body
 
         :returns: ``True`` if this rule matches given params

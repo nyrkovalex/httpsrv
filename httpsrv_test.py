@@ -1,3 +1,4 @@
+# pylint: disable=missing-docstring,invalid-name
 import json
 import unittest
 import requests

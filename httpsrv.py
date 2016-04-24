@@ -1,3 +1,6 @@
+'''
+Httpsrv is a simple HTTP server for API mocking during automated testing
+'''
 import json
 
 from threading import Thread
@@ -5,10 +8,31 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 
 class PendingRequestsLeftException(Exception):
+    '''
+    Raises when server has pending reques expectations by calling
+    the :func:`Server.assert_no_pending` method
+    '''
     pass
 
 
 class Rule:
+    '''
+    Expectation rule — defines expected request parameters and response values
+
+    :type method: str
+    :param method: expected request method: ``'GET'``, ``'POST'``, etc.
+        Can take any custom string
+
+    :type path: str
+    :param path: expected path including query parameters, e.g. ``'/users?name=John%20Doe'``
+
+    :type headers: dict
+    :param headers: dictionary of expected request headers where all keys are lowercased,
+        e.g. ``'content-length'``
+
+    :type text: str
+    :param text: expected request body text
+    '''
     def __init__(self, method, path, headers=None, text=None):
         self.method = method
         self.path = path
@@ -18,20 +42,74 @@ class Rule:
         self.code = 200
 
     def status(self, status, headers=None):
+        '''
+        Respond with given status and no content
+
+        :type status: int
+        :param status: status code to return
+
+        :type headers: dict
+        :param headers: dictionary of headers to add to response
+            where all keys are lowercased e.g. ``'content-length'``
+        '''
         self.code = status
         self.headers.update(headers or {})
 
     def text(self, text, status=None, headers=None):
+        '''
+        Respond with given status and text content
+
+        :type text: str
+        :param text: text to return
+
+        :type status: int
+        :param status: status code to return
+
+        :type headers: dict
+        :param headers: dictionary of headers to add to response
+            where all keys are lowercased e.g. ``'content-length'``
+        '''
         self.status(status or self.code, headers)
         self.response = text.encode('utf-8')
 
     def json(self, json_doc, status=None, headers=None):
+        '''
+        Respond with given status and JSON content. Will also set ``'Content-Type'`` to
+        ``'applicaion/json'`` if header is not specified explicitly
+
+        :type json_doc: dict
+        :param json_doc: dictionary to respond with converting to JSON string
+
+        :type status: int
+        :param status: status code to return
+
+        :type headers: dict
+        :param headers: dictionary of headers to add to response
+            where all keys are lowercased e.g. ``'content-length'``
+        '''
         headers = headers or {}
         if 'content-type' not in headers:
             headers['content-type'] = 'application/json'
         return self.text(json.dumps(json_doc), status, headers)
 
-    def matches(self, method, path, data):
+    def matches(self, method, path, data=None):
+        '''
+        Checks if rule matches given request parameters
+
+        :type method: str
+        :param method: HTTP method, e.g. ``'GET'``, ``'POST'``, etc.
+            Can take any custom string
+
+        :type path: str
+        :param path: request path including query parameters,
+            e.g. ``'/users?name=John%20Doe'``
+
+        :type bytes:
+        :param data: request body
+
+        :returns: ``True`` if this rule matches given params
+        :rtype: bool
+        '''
         return self.method == method and self.path == path and self.data == data
 
 
@@ -39,19 +117,13 @@ class Server:
     '''
     Tunable HTTP server running in a parallel thread.
 
-    Example usage (using `requests` library)::
-        server = Server(8080).start()
-        server.on('GET', '/').text('hello')
-        res = requests.get('http://localhost:8080')
-        assert res.text == 'hello'
+    Please note that `this server is not thread-safe` which should not cause any troubles
+    in common use-cases due to python single-threaded nature.
+
+    :type port: int
+    :param port: port this server will listen to after :func:`Server.start` is called
     '''
-
     def __init__(self, port):
-        '''
-        Creates an instance of :class:`Server`
-
-        :param port: port this server will listen to after :func:`Server.start` is called
-        '''
         self._port = port
         self._rules = []
         self._thread = None
@@ -59,25 +131,41 @@ class Server:
         self._handler = None
         self.running = False
 
+    # pylint: disable=invalid-name
     def on(self, method, path, headers=None, text=None):
         '''
-        Defines a rule expectation — after recieving a request with matching parameters
+        Defines a :class:`Rule` expectation — after recieving a request with matching parameters
         target response will be sent
 
-        :param method: request method: `'GET'`, `'POST'`, etc. can be some custom string
+        :type method: str
+        :param method: request method: ``'GET'``, ``'POST'``, etc. can be some custom string
+
+        :type path: str
         :param path: request path including query parameters
-        :param headers: (optional) dictionary of headers to expect.
-            All keys must be lowercase, e.g. `'content-type'`
-        :param text: (optional) response text to expect
+
+        :type headers: dict
+        :param headers: dictionary of headers to expect.
+            All keys must be lowercase, e.g. ``'content-type'``
+
+        :type text: str
+        :param text: response text to expect
+
+        :rtype: Rule
+        :returns: newly created expectation rule
         '''
         rule = Rule(method, path, headers, text)
         self._rules.append(rule)
         if method not in self._handler.known_methods:
             self._handler.add_method(method)
         return rule
+    # pylint: enable=invalid-name
 
     def start(self):
-        self._handler = create_handler_class(self._rules)
+        '''
+        Starts a server on the port provided in the :class:`Server` constructor
+        in a separate thread
+        '''
+        self._handler = _create_handler_class(self._rules)
         self._server = HTTPServer(('', self._port), self._handler)
         self._thread = Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
@@ -85,25 +173,42 @@ class Server:
         return self
 
     def stop(self):
+        '''
+        Shuts the server down and waits for server thread to join
+        '''
         self._server.shutdown()
         self._server.server_close()
         self._thread.join()
         self.running = False
 
     def reset(self):
+        '''
+        Clears the server expectations. Useful for resetting the server to its default state
+        in ``teardDown()`` test method instead of time-consuming restart procedure
+        '''
         self._rules.clear()
 
     def assert_no_pending(self):
+        '''
+        Raises a :class:`PendingRequestsLeftException` error if server has any non-resolved
+        expectations.
+        Useful in ``tearDown()`` test method to verify that test had correct expectations
+
+        :raises: :class:`PendingRequestsLeftException`
+        '''
         if self._rules:
             raise PendingRequestsLeftException()
 
 
-def create_handler_class(rules):
-    class Handler(BaseHTTPRequestHandler):
+def _create_handler_class(rules):
+    class _Handler(BaseHTTPRequestHandler):
         known_methods = set()
 
         @classmethod
         def add_method(cls, method):
+            '''
+            Adds a handler function for HTTP method provided
+            '''
             if method in cls.known_methods:
                 return
             func = lambda self: cls._handle(self, method)
@@ -134,6 +239,6 @@ def create_handler_class(rules):
             rules.remove(rule)
 
     for rule in rules:
-        Handler.add_method(rule.method)
+        _Handler.add_method(rule.method)
 
-    return Handler
+    return _Handler

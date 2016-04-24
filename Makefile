@@ -29,3 +29,9 @@ docs:
 .PHONY: upload-test
 upload-test:
 	python setup.py bdist_wheel upload -r https://testpypi.python.org/pypi
+
+.PHONY: upload
+upload:
+	python setup.py bdist_wheel upload
+
+

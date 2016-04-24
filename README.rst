@@ -22,7 +22,9 @@ Using requests_ library::
 Installation
 ------------
 
-To be done
+::
+
+    pip install httpsrv
 
 
 .. _requests: http://docs.python-requests.org/en/master/

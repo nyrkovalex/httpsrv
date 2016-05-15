@@ -51,9 +51,13 @@ class Rule:
         :type headers: dict
         :param headers: dictionary of headers to add to response
             where all keys are lowercased e.g. ``'content-length'``
+
+        :returns: itself
+        :rtype: Rule
         '''
         self.code = status
         self.headers.update(headers or {})
+        return self
 
     def text(self, text, status=None, headers=None):
         '''
@@ -68,9 +72,13 @@ class Rule:
         :type headers: dict
         :param headers: dictionary of headers to add to response
             where all keys are lowercased e.g. ``'content-length'``
+
+        :returns: itself
+        :rtype: Rule
         '''
         self.status(status or self.code, headers)
         self.response = text.encode('utf-8')
+        return self
 
     def json(self, json_doc, status=None, headers=None):
         '''
@@ -191,15 +199,25 @@ class Server:
         '''
         self._rules.clear()
 
-    def assert_no_pending(self):
+    def assert_no_pending(self, target_rule=None):
         '''
-        Raises a :class:`PendingRequestsLeftException` error if server has any non-resolved
+        Raises a :class:`PendingRequestsLeftException` error if server has target rule
+        non-resolved.
+
+        When target_rule argument is ommitted raises if server has any pending
         expectations.
+
         Useful in ``tearDown()`` test method to verify that test had correct expectations
+
+        :type target_rule: Rule
+        :param target_rule: will raise if this rule is left pending
 
         :raises: :class:`PendingRequestsLeftException`
         '''
-        if self._rules:
+        if target_rule:
+            if target_rule in self._rules:
+                raise PendingRequestsLeftException()
+        elif self._rules:
             raise PendingRequestsLeftException()
 
 
@@ -229,7 +247,8 @@ def _create_handler_class(rules):
             for key, value in rule.headers.items():
                 self.send_header(key, value)
             self.end_headers()
-            self.wfile.write(rule.response)
+            if rule.response:
+                self.wfile.write(rule.response)
 
         def _handle(self, method):
             body = self._read_body()

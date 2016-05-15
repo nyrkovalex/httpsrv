@@ -61,6 +61,19 @@ class TextResponses(ServerTest):
         with self.assertRaises(PendingRequestsLeftException):
             server.assert_no_pending()
 
+    def test_should_not_raise_if_specific_pending_requets_left(self):
+        resolved_rule = server.on('GET', '/').text('hello')
+        pending_rule = server.on('GET', '/pending').text('nope')
+        requests.get('http://localhost:8080/')
+        server.assert_no_pending(resolved_rule)
+
+    def test_should_raise_if_target_rule_left_unresolved(self):
+        resolved_rule = server.on('GET', '/').text('hello')
+        pending_rule = server.on('GET', '/pending').text('nope')
+        requests.get('http://localhost:8080/')
+        with self.assertRaises(PendingRequestsLeftException):
+            server.assert_no_pending(pending_rule)
+
     def test_should_not_raise_anything(self):
         server.assert_no_pending()
 

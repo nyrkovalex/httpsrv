@@ -1,5 +1,3 @@
-.. include:: docs/intro.rst
-
 Httpsrv
 =======
 

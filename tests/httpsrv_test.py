@@ -92,6 +92,17 @@ class TextResponses(ServerTest):
         res = requests.get('http://localhost:8080')
         self.assertEqual(res.status_code, 201)
 
+    def test_should_match_request_headers(self):
+        server.on('GET', '/', headers={'Authorization': 'Custom'}).text('hello')
+        res = requests.get('http://localhost:8080', headers={'Authorization': 'Custom'})
+        self.assertEqual(res.text, 'hello')
+
+    def test_should_ignore_request_body(self):
+        server.on('POST', '/').text('hello')
+        res = requests.post('http://localhost:8080', data='Foo')
+        self.assertEqual(res.text, 'hello')
+
+
 
 class JsonResponses(ServerTest):
     def test_should_respond_with_json(self):

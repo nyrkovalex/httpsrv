@@ -15,6 +15,33 @@ class PendingRequestsLeftException(Exception):
     pass
 
 
+class _Expectation:
+    def __init__(self, method, path, headers, text):
+        self.method = method
+        self.path = path
+        self.headers = headers or {}
+        self.bytes = text.encode('utf-8') if text else None
+
+    def matches(self, method, path, headers, bytes):
+        return (self.method == method
+                and self.path == path
+                and self._headers_match(headers)
+                and self.bytes == bytes if self.bytes else True)
+
+    def _headers_match(self, headers):
+        for name, value in self.headers.items():
+            if not (name in headers and value == headers[name]):
+                return False
+        return True
+
+
+class _Response:
+    def __init__(self, code=200, headers=None, bytes=None):
+        self.code = code
+        self.headers = headers or {}
+        self.bytes = bytes
+
+
 class Rule:
     '''
     Expectation rule — defines expected request parameters and response values
@@ -27,19 +54,14 @@ class Rule:
     :param path: expected path including query parameters, e.g. ``'/users?name=John%20Doe'``
 
     :type headers: dict
-    :param headers: dictionary of expected request headers where all keys are lowercased,
-        e.g. ``'content-length'``
+    :param headers: dictionary of expected request headers
 
     :type text: str
     :param text: expected request body text
     '''
-    def __init__(self, method, path, headers=None, text=None):
-        self.method = method
-        self.path = path
-        self.data = text.encode('utf-8') if text else None
+    def __init__(self, method, path, headers, text):
+        self._expectation = _Expectation(method, path, headers, text)
         self.response = None
-        self.headers = headers or {}
-        self.code = 200
 
     def status(self, status, headers=None):
         '''
@@ -50,16 +72,14 @@ class Rule:
 
         :type headers: dict
         :param headers: dictionary of headers to add to response
-            where all keys are lowercased e.g. ``'content-length'``
 
         :returns: itself
         :rtype: Rule
         '''
-        self.code = status
-        self.headers.update(headers or {})
+        self.response = _Response(status, headers)
         return self
 
-    def text(self, text, status=None, headers=None):
+    def text(self, text, status=200, headers=None):
         '''
         Respond with given status and text content
 
@@ -71,16 +91,14 @@ class Rule:
 
         :type headers: dict
         :param headers: dictionary of headers to add to response
-            where all keys are lowercased e.g. ``'content-length'``
 
         :returns: itself
         :rtype: Rule
         '''
-        self.status(status or self.code, headers)
-        self.response = text.encode('utf-8')
+        self.response = _Response(status, headers, text.encode('utf8'))
         return self
 
-    def json(self, json_doc, status=None, headers=None):
+    def json(self, json_doc, status=200, headers=None):
         '''
         Respond with given status and JSON content. Will also set ``'Content-Type'`` to
         ``'applicaion/json'`` if header is not specified explicitly
@@ -93,14 +111,13 @@ class Rule:
 
         :type headers: dict
         :param headers: dictionary of headers to add to response
-            where all keys are lowercased e.g. ``'content-length'``
         '''
         headers = headers or {}
         if 'content-type' not in headers:
             headers['content-type'] = 'application/json'
         return self.text(json.dumps(json_doc), status, headers)
 
-    def matches(self, method, path, data=None):
+    def matches(self, method, path, headers, bytes=None):
         '''
         Checks if rule matches given request parameters
 
@@ -112,13 +129,13 @@ class Rule:
         :param path: request path including query parameters,
             e.g. ``'/users?name=John%20Doe'``
 
-        :type data: bytes
-        :param data: request body
+        :type bytes: bytes
+        :param bytes: request body
 
         :returns: ``True`` if this rule matches given params
         :rtype: bool
         '''
-        return self.method == method and self.path == path and self.data == data
+        return self._expectation.matches(method, path, headers, bytes)
 
 
 class Server:
@@ -152,11 +169,10 @@ class Server:
         :param path: request path including query parameters
 
         :type headers: dict
-        :param headers: dictionary of headers to expect.
-            All keys must be lowercase, e.g. ``'content-type'``
+        :param headers: dictionary of headers to expect. If omitted any headers will do
 
         :type text: str
-        :param text: response text to expect
+        :param text: response text to expect. If ommited any text will match
 
         :rtype: Rule
         :returns: newly created expectation rule
@@ -242,22 +258,22 @@ def _create_handler_class(rules):
                 return self.rfile.read(length) if length > 0 else None
             return None
 
-        def _respond(self, rule):
-            self.send_response(rule.code)
-            for key, value in rule.headers.items():
+        def _respond(self, response):
+            self.send_response(response.code)
+            for key, value in response.headers.items():
                 self.send_header(key, value)
             self.end_headers()
-            if rule.response:
-                self.wfile.write(rule.response)
+            if response.bytes:
+                self.wfile.write(response.bytes)
 
         def _handle(self, method):
             body = self._read_body()
-            matching_rules = [r for r in rules if r.matches(method, self.path, body)]
+            matching_rules = [r for r in rules if r.matches(method, self.path, dict(self.headers), body)]
             if not matching_rules:
                 return self.send_error(
                     500, 'No matching rule found for ' + self.requestline + ' body ' + str(body))
             rule = matching_rules[0]
-            self._respond(rule)
+            self._respond(rule.response)
             rules.remove(rule)
 
     for rule in rules:

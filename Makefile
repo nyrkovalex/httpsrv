@@ -1,8 +1,8 @@
 SRC_PATH = httpsrv
 
-TEST_PATH = test
+TEST_PATH = tests
 TEST_PATTERN = *_test.py
-TEST_CMD = make tests
+TEST_CMD = make test
 DOCS_PATH = docs
 DOCS_CMD = $(MAKE) -C $(DOCS_PATH) html
 
@@ -10,7 +10,7 @@ ifndef VERBOSE
 	MAKEFLAGS += --no-print-directory
 endif
 
-tests:
+test:
 	python -m unittest discover -s $(TEST_PATH) -p $(TEST_PATTERN)
 
 watch:

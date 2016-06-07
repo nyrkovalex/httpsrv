@@ -19,6 +19,7 @@ watch:
 watch-docs:
 	watchmedo shell-command --patterns='*.rst;*.py' --ignore-directories --recursive --command="$(DOCS_CMD)" -W .
 
+.PHONY: docs
 docs:
 	$(DOCS_CMD)
 

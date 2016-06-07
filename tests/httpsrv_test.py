@@ -102,6 +102,20 @@ class TextResponses(ServerTest):
         res = requests.post('http://localhost:8080', data='Foo')
         self.assertEqual(res.text, 'hello')
 
+    def test_should_match_json_bosy(self):
+        server.on('POST', '/', json=dict(foo='bar')).text('hello')
+        res = requests.post('http://localhost:8080', data='{ "foo": "bar" }')
+        self.assertEqual(res.text, 'hello')
+
+    def test_should_not_fall_on_json_parse_error(self):
+        server.on('POST', '/', json=dict(foo='bar')).text('hello')
+        res = requests.post('http://localhost:8080', data='{ "foo": }')
+        self.assertEqual(res.status_code, 500)
+
+    def test_should_ignore_text_when_json_present(self):
+        server.on('POST', '/', json=dict(foo='bar'), text='{ "foo": "bar" }').text('hello')
+        res = requests.post('http://localhost:8080', data='{"foo": "bar"}')
+        self.assertEqual(res.text, 'hello')
 
 
 class JsonResponses(ServerTest):

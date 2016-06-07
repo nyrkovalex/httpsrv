@@ -2,6 +2,7 @@
 Httpsrv is a simple HTTP server for API mocking during automated testing
 '''
 import json
+from json.decoder import JSONDecodeError
 
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -16,23 +17,33 @@ class PendingRequestsLeftException(Exception):
 
 
 class _Expectation:
-    def __init__(self, method, path, headers, text):
+    def __init__(self, method, path, headers, text, json):
         self.method = method
         self.path = path
         self.headers = headers or {}
         self.bytes = text.encode('utf-8') if text else None
+        self.json = json
 
     def matches(self, method, path, headers, bytes):
         return (self.method == method
                 and self.path == path
-                and self._headers_match(headers)
-                and self.bytes == bytes if self.bytes else True)
+                and self._match_headers(headers)
+                and self._match_body(bytes))
 
-    def _headers_match(self, headers):
+    def _match_headers(self, headers):
         for name, value in self.headers.items():
             if not (name in headers and value == headers[name]):
                 return False
         return True
+
+    def _match_body(self, bytes):
+        if not self.json:
+            return bytes == self.bytes if self.bytes else True
+        try:
+            parsed = json.loads(bytes.decode('utf8'))
+            return self.json == parsed
+        except JSONDecodeError:
+            return False
 
 
 class _Response:
@@ -58,9 +69,13 @@ class Rule:
 
     :type text: str
     :param text: expected request body text
+
+    :type json: dict
+    :param json: request json to expect. If ommited any json will match,
+        if present text param will be ignored
     '''
-    def __init__(self, method, path, headers, text):
-        self._expectation = _Expectation(method, path, headers, text)
+    def __init__(self, method, path, headers, text, json):
+        self._expectation = _Expectation(method, path, headers, text, json)
         self.response = None
 
     def status(self, status, headers=None):
@@ -157,7 +172,7 @@ class Server:
         self.running = False
 
     # pylint: disable=invalid-name
-    def on(self, method, path, headers=None, text=None):
+    def on(self, method, path, headers=None, text=None, json=None):
         '''
         Defines a :class:`Rule` expectation — after recieving a request with matching parameters
         target response will be sent
@@ -172,12 +187,16 @@ class Server:
         :param headers: dictionary of headers to expect. If omitted any headers will do
 
         :type text: str
-        :param text: response text to expect. If ommited any text will match
+        :param text: request text to expect. If ommited any text will match
+
+        :type json: dict
+        :param json: request json to expect. If ommited any json will match,
+            if present text param will be ignored
 
         :rtype: Rule
         :returns: newly created expectation rule
         '''
-        rule = Rule(method, path, headers, text)
+        rule = Rule(method, path, headers, text, json)
         self._rules.append(rule)
         if method not in self._handler.known_methods:
             self._handler.add_method(method)

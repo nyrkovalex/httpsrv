@@ -2,7 +2,6 @@
 Httpsrv is a simple HTTP server for API mocking during automated testing
 '''
 import json
-from json.decoder import JSONDecodeError
 
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -42,7 +41,7 @@ class _Expectation:
         try:
             parsed = json.loads(bytes.decode('utf8'))
             return self.json == parsed
-        except JSONDecodeError:
+        except ValueError:
             return False
 
 

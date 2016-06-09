@@ -25,9 +25,12 @@ class _Expectation:
 
     def matches(self, method, path, headers, bytes):
         return (self.method == method
-                and self.path == path
+                and self._match_path(path)
                 and self._match_headers(headers)
                 and self._match_body(bytes))
+
+    def _match_path(self, path):
+        return self.path == path if self.path else True
 
     def _match_headers(self, headers):
         for name, value in self.headers.items():
@@ -62,6 +65,7 @@ class Rule:
 
     :type path: str
     :param path: expected path including query parameters, e.g. ``'/users?name=John%20Doe'``
+        if ommited any path will do
 
     :type headers: dict
     :param headers: dictionary of expected request headers
@@ -151,6 +155,16 @@ class Rule:
         '''
         return self._expectation.matches(method, path, headers, bytes)
 
+    @property
+    def method(self):
+        '''
+        Method name this rule will respond to
+
+        :returns: epected method name
+        :rtype: str
+        '''
+        return self._expectation.method
+
 
 class Server:
     '''
@@ -165,16 +179,15 @@ class Server:
     def __init__(self, port):
         self._port = port
         self._rules = []
+        self._always_rules = []
         self._thread = None
         self._server = None
         self._handler = None
         self.running = False
 
-    # pylint: disable=invalid-name
-    def on(self, method, path, headers=None, text=None, json=None):
+    def always(self, method, path=None, headers=None, text=None, json=None):
         '''
-        Defines a :class:`Rule` expectation — after recieving a request with matching parameters
-        target response will be sent
+        Sends response every time matching parameters are found util :func:`Server.reset` is called
 
         :type method: str
         :param method: request method: ``'GET'``, ``'POST'``, etc. can be some custom string
@@ -196,11 +209,41 @@ class Server:
         :returns: newly created expectation rule
         '''
         rule = Rule(method, path, headers, text, json)
-        self._rules.append(rule)
-        if method not in self._handler.known_methods:
-            self._handler.add_method(method)
-        return rule
+        return self._add_rule_to(rule, self._always_rules)
+
+    # pylint: disable=invalid-name
+    def on(self, method, path=None, headers=None, text=None, json=None):
+        '''
+        Sends response to matching parameters one time and removes it from list of expectations
+
+        :type method: str
+        :param method: request method: ``'GET'``, ``'POST'``, etc. can be some custom string
+
+        :type path: str
+        :param path: request path including query parameters
+
+        :type headers: dict
+        :param headers: dictionary of headers to expect. If omitted any headers will do
+
+        :type text: str
+        :param text: request text to expect. If ommited any text will match
+
+        :type json: dict
+        :param json: request json to expect. If ommited any json will match,
+            if present text param will be ignored
+
+        :rtype: Rule
+        :returns: newly created expectation rule
+        '''
+        rule = Rule(method, path, headers, text, json)
+        return self._add_rule_to(rule, self._rules)
     # pylint: enable=invalid-name
+
+    def _add_rule_to(self, rule, rules):
+        rules.append(rule)
+        if rule.method not in self._handler.known_methods:
+            self._handler.add_method(rule.method)
+        return rule
 
     def start(self):
         '''
@@ -210,7 +253,7 @@ class Server:
         :rtype: Server
         :returns: server instance for chaining
         '''
-        self._handler = _create_handler_class(self._rules)
+        self._handler = _create_handler_class(self._rules, self._always_rules)
         self._server = HTTPServer(('', self._port), self._handler)
         self._thread = Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
@@ -232,6 +275,7 @@ class Server:
         in ``teardDown()`` test method instead of time-consuming restart procedure
         '''
         self._rules.clear()
+        self._always_rules.clear()
 
     def assert_no_pending(self, target_rule=None):
         '''
@@ -255,7 +299,7 @@ class Server:
             raise PendingRequestsLeftException()
 
 
-def _create_handler_class(rules):
+def _create_handler_class(rules, always_rules):
     class _Handler(BaseHTTPRequestHandler):
         known_methods = set()
 
@@ -286,13 +330,24 @@ def _create_handler_class(rules):
 
         def _handle(self, method):
             body = self._read_body()
+            rule = self._respond_with_rules(method, body, rules)
+            if rule:
+                rules.remove(rule)
+                return
+            always_rule = self._respond_with_rules(method, body, always_rules)
+            if always_rule:
+                return
+            return self.send_error(
+                500, 'No matching rule found for ' + self.requestline + ' body ' + str(body))
+
+        def _respond_with_rules(self, method, body, rules):
             matching_rules = [r for r in rules if r.matches(method, self.path, dict(self.headers), body)]
-            if not matching_rules:
-                return self.send_error(
-                    500, 'No matching rule found for ' + self.requestline + ' body ' + str(body))
-            rule = matching_rules[0]
-            self._respond(rule.response)
-            rules.remove(rule)
+            if matching_rules:
+                rule = matching_rules[0]
+                self._respond(rule.response)
+                return rule
+            return None
+
 
     for rule in rules:
         _Handler.add_method(rule.method)

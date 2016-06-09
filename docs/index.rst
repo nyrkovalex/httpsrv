@@ -4,13 +4,8 @@
    contain the root `toctree` directive.
 
 .. toctree::
+    api
 
 .. include:: ../README.rst
 
-
-API
----
-
-.. automodule:: httpsrv
-   :members:
 

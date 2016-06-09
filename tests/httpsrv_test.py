@@ -117,6 +117,24 @@ class TextResponses(ServerTest):
         res = requests.post('http://localhost:8080', data='{"foo": "bar"}')
         self.assertEqual(res.text, 'hello')
 
+    def test_should_respond_to_any_options(self):
+        server.on('OPTIONS').status(200)
+        res = requests.options('http://localhost:8080/some/url', headers={'foo': 'bar'})
+        self.assertEqual(res.status_code, 200)
+
+    def test_should_always_respond_to_matching_queries(self):
+        server.always('OPTIONS').status(200)
+        res = requests.options('http://localhost:8080/some/url', headers={'foo': 'bar'})
+        self.assertEqual(res.status_code, 200)
+        res = requests.options('http://localhost:8080/some/url', headers={'foo': 'bar'})
+        self.assertEqual(res.status_code, 200)
+
+    def test_should_reset_always_rules(self):
+        server.always('OPTIONS').status(200)
+        server.reset()
+        res = requests.options('http://localhost:8080/some/url', headers={'foo': 'bar'})
+        self.assertEqual(res.status_code, 500)
+
 
 class JsonResponses(ServerTest):
     def test_should_respond_with_json(self):

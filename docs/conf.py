@@ -17,6 +17,9 @@ import sys
 import os
 import sphinx_rtd_theme
 
+with open(os.path.abspath('../VERSION'), encoding='utf-8') as f:
+    version = f.read()
+
 # If extensions (or modules to document with autodoc) are in another directory,
 # add these directories to sys.path here. If the directory is relative to the
 # documentation root, use os.path.abspath to make it absolute, like shown here.
@@ -59,7 +62,7 @@ author = 'Alexander Nyrkov'
 # built documents.
 #
 # The short X.Y version.
-version = '0.1.6'
+# version = VERSION
 # The full version, including alpha/beta/rc tags.
 release = version
 

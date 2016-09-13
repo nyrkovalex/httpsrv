@@ -8,9 +8,12 @@ long_description = None
 with open(path.join(here, 'README.rst'), encoding='utf-8') as f:
     long_description = f.read()
 
+with open(path.join(here, 'VERSION'), encoding='utf-8') as f:
+    version = f.read()
+
 setup(
     name='httpsrv',
-    version='0.1.6',
+    version=version,
     description='Simple http server for API mocking during automated testing',
     long_description=long_description,
     url='https://github.com/nyrkovalex/httpsrv',
@@ -25,7 +28,7 @@ setup(
         #   3 - Alpha
         #   4 - Beta
         #   5 - Production/Stable
-        'Development Status :: 3 - Alpha',
+        'Development Status :: 4 - Beta',
         'Intended Audience :: Developers',
         'Topic :: Software Development :: Testing',
         'License :: OSI Approved :: MIT License',
@@ -35,6 +38,7 @@ setup(
         'Programming Language :: Python :: 3.5',
     ],
     keywords='api http mock testing',
+    install_requires=['tornado'],
     extras_require={
         'test': ['requests'],
     },

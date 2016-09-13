@@ -1,10 +1,13 @@
 '''
 Httpsrv is a simple HTTP server for API mocking during automated testing
 '''
-import json
-
+import json as libjson
 from threading import Thread
-from http.server import HTTPServer, BaseHTTPRequestHandler
+
+import tornado.web
+import tornado.ioloop
+from tornado.gen import coroutine
+
 
 
 class PendingRequestsLeftException(Exception):
@@ -16,43 +19,107 @@ class PendingRequestsLeftException(Exception):
 
 
 class _Expectation:
-    def __init__(self, method, path, headers, text, json):
+    def __init__(self, method, path, headers):
         self.method = method
         self.path = path
         self.headers = headers or {}
-        self.bytes = text.encode('utf-8') if text else None
-        self.json = json
 
-    def matches(self, method, path, headers, bytes):
-        return (self.method == method
-                and self._match_path(path)
-                and self._match_headers(headers)
-                and self._match_body(bytes))
+    def matches(self, request):
+        return (self._match_method(request)
+                and self._match_path(request)
+                and self._match_headers(request)
+                and self.match_content(request))
 
-    def _match_path(self, path):
-        return self.path == path if self.path else True
+    def _match_method(self, request):
+        return self.method == request.method
 
-    def _match_headers(self, headers):
+    def _match_path(self, request):
+        return self.path == request.uri if self.path else True
+
+    def _match_headers(self, request):
         for name, value in self.headers.items():
-            if not (name in headers and value == headers[name]):
+            if not (name in request.headers and value == request.headers[name]):
                 return False
         return True
 
-    def _match_body(self, bytes):
-        if not self.json:
-            return bytes == self.bytes if self.bytes else True
+    def match_content(self, request):
+        raise NotImplementedError('Implement in a base class')
+
+
+class _AnyExpectation(_Expectation):
+    def match_content(self, request):
+        return True
+
+
+class _TextExpectation(_Expectation):
+    def __init__(self, method, path, headers, text):
+        super().__init__(method, path, headers)
+        self.text = text.encode('utf-8')
+
+    def match_content(self, request):
+        return self.text == request.body
+
+
+class _JsonExpectation(_Expectation):
+    def __init__(self, method, path, headers, json):
+        super().__init__(method, path, headers)
+        self.json = json
+
+    def match_content(self, request):
         try:
-            parsed = json.loads(bytes.decode('utf8'))
-            return self.json == parsed
+            return self.json == libjson.loads(request.body.decode('utf8'))
         except ValueError:
             return False
 
 
+class _FormExpectation(_Expectation):
+    def __init__(self, method, path, headers, form):
+        super().__init__(method, path, headers)
+        self.form = {}
+        for name, values in form.items():
+            self.form[name] = [v.encode('utf-8') for v in values]
+
+    def match_content(self, request):
+        return self.form == request.arguments
+
+
+class _FilesExpectation(_Expectation):
+    def __init__(self, method, path, headers, files, form):
+        super().__init__(method, path, headers)
+        self.files = files
+        self.form = form
+        self._form_expectation = _FormExpectation(method, path, headers, form or {})
+
+    def match_content(self, request):
+        if self.form:
+            form_ok = self._form_expectation.match_content(request)
+            if not form_ok:
+                return False
+        for field, expected in self.files.items():
+            uploaded = request.files.get(field)
+            if not uploaded:
+                return False
+            if not self._compare_files(expected, uploaded):
+                return False
+        return True
+
+    def _compare_files(self, expected, uploaded):
+        for filename, contents in expected.items():
+            if not self._file_in_uploaded(filename, contents, uploaded):
+                return False
+        return True
+
+    def _file_in_uploaded(self, filename, contents, uploaded):
+        for file in uploaded:
+            if file.filename == filename and file.body == contents:
+                return True
+
+
 class _Response:
-    def __init__(self, code=200, headers=None, bytes=None):
+    def __init__(self, code=200, headers=None, body=None):
         self.code = code
         self.headers = headers or {}
-        self.bytes = bytes
+        self.bytes = body
 
 
 class Rule:
@@ -77,8 +144,8 @@ class Rule:
     :param json: request json to expect. If ommited any json will match,
         if present text param will be ignored
     '''
-    def __init__(self, method, path, headers, text, json):
-        self._expectation = _Expectation(method, path, headers, text, json)
+    def __init__(self, expectation):
+        self._expectation = expectation
         self.response = None
 
     def status(self, status, headers=None):
@@ -133,9 +200,9 @@ class Rule:
         headers = headers or {}
         if 'content-type' not in headers:
             headers['content-type'] = 'application/json'
-        return self.text(json.dumps(json_doc), status, headers)
+        return self.text(libjson.dumps(json_doc), status, headers)
 
-    def matches(self, method, path, headers, bytes=None):
+    def matches(self, request):
         '''
         Checks if rule matches given request parameters
 
@@ -153,7 +220,7 @@ class Rule:
         :returns: ``True`` if this rule matches given params
         :rtype: bool
         '''
-        return self._expectation.matches(method, path, headers, bytes)
+        return self._expectation.matches(request)
 
     @property
     def method(self):
@@ -182,12 +249,64 @@ class Server:
         self._always_rules = []
         self._thread = None
         self._server = None
-        self._handler = None
-        self.running = False
 
-    def always(self, method, path=None, headers=None, text=None, json=None):
+    def on_any(self, method, path=None, headers=None, always=False):
         '''
-        Sends response every time matching parameters are found util :func:`Server.reset` is called
+        Request with any content. Path is optional if omitted any path will match.
+
+        Server will respond to matching parameters one time and remove the rule from list
+        unless ``always`` flag is set to ``True``
+
+        :type method: str
+        :param method: request method: ``'GET'``, ``'POST'``, etc. can be some custom string
+
+        :type path: str
+        :param path: request path including query parameters. If omitted any path will do
+
+        :type headers: dict
+        :param headers: dictionary of headers to expect. If omitted any headers will do
+
+        :type always: bool
+        :param always: if ``True`` this rule will not be removed after use
+
+        :rtype: Rule
+        :returns: newly created expectation rule
+        '''
+        return self._add_rule(_AnyExpectation(method, path, headers), always)
+
+    def on_text(self, method, path, text, headers=None, always=False):
+        '''
+        Request with generic text data. Can be used if nothing else matches.
+
+        Server will respond to matching parameters one time and remove the rule from list
+        unless ``always`` flag is set to ``True``
+        :type method: str
+        :param method: request method: ``'GET'``, ``'POST'``, etc. can be some custom string
+
+        :type path: str
+        :param path: request path including query parameters
+
+        :type text: str
+        :param text: expected text sent with request
+
+        :type headers: dict
+        :param headers: dictionary of headers to expect. If omitted any headers will do
+
+        :type always: bool
+        :param always: if ``True`` this rule will not be removed after use
+
+        :rtype: Rule
+        :returns: newly created expectation rule
+        '''
+        return self._add_rule(_TextExpectation(method, path, headers, text), always)
+
+    def on_json(self, method, path, json, headers=None, always=False):
+        '''
+        Request with JSON body. This will not check for ``Content-Type`` header.
+        Instead we'll try to parse whatever request body contains.'
+
+        Server will respond to matching parameters one time and remove the rule from list
+        unless ``always`` flag is set to ``True``
 
         :type method: str
         :param method: request method: ``'GET'``, ``'POST'``, etc. can be some custom string
@@ -195,26 +314,27 @@ class Server:
         :type path: str
         :param path: request path including query parameters
 
+        :type json: dict
+        :param json: expected json data
+
         :type headers: dict
         :param headers: dictionary of headers to expect. If omitted any headers will do
 
-        :type text: str
-        :param text: request text to expect. If ommited any text will match
-
-        :type json: dict
-        :param json: request json to expect. If ommited any json will match,
-            if present text param will be ignored
+        :type always: bool
+        :param always: if ``True`` this rule will not be removed after use
 
         :rtype: Rule
         :returns: newly created expectation rule
         '''
-        rule = Rule(method, path, headers, text, json)
-        return self._add_rule_to(rule, self._always_rules)
+        return self._add_rule(_JsonExpectation(method, path, headers, json), always)
 
-    # pylint: disable=invalid-name
-    def on(self, method, path=None, headers=None, text=None, json=None):
+    def on_form(self, method, path, form, headers=None, always=False):
         '''
-        Sends response to matching parameters one time and removes it from list of expectations
+        Request with form data either in requets body or query params.
+
+        Server will respond to matching parameters one time and remove the rule from list
+        unless ``always`` flag is set to ``True``
+
 
         :type method: str
         :param method: request method: ``'GET'``, ``'POST'``, etc. can be some custom string
@@ -222,27 +342,57 @@ class Server:
         :type path: str
         :param path: request path including query parameters
 
+        :type form: dict
+        :param json: expected form data. **Please note that filed values must always be
+            of collection type** e.g. ``{'user': ['Dude']}``. this restriction is caused by possible
+            multivalue fields and may be lifted in future releases
+
         :type headers: dict
         :param headers: dictionary of headers to expect. If omitted any headers will do
 
-        :type text: str
-        :param text: request text to expect. If ommited any text will match
-
-        :type json: dict
-        :param json: request json to expect. If ommited any json will match,
-            if present text param will be ignored
+        :type always: bool
+        :param always: if ``True`` this rule will not be removed after use
 
         :rtype: Rule
         :returns: newly created expectation rule
         '''
-        rule = Rule(method, path, headers, text, json)
-        return self._add_rule_to(rule, self._rules)
-    # pylint: enable=invalid-name
+        return self._add_rule(_FormExpectation(method, path, headers, form), always)
 
-    def _add_rule_to(self, rule, rules):
-        rules.append(rule)
-        if rule.method not in self._handler.known_methods:
-            self._handler.add_method(rule.method)
+    def on_files(self, method, path, files, form=None, headers=None, always=False):
+        '''
+        File upload with optional form data.
+
+        Server will respond to matching parameters one time and remove the rule from list
+        unless ``always`` flag is set to ``True``
+
+        :type method: str
+        :param method: request method: ``'GET'``, ``'POST'``, etc. can be some custom string
+
+        :type path: str
+        :param path: request path including query parameters
+
+        :type form: dict
+        :param json: expected form data. **Please note that filed values must always BaseException
+            of collection type e.g. ``{'user': ['Dude']}``.** this restriction is caused by possible
+            multivalue fields and may be lifted in future releases
+
+        :type headers: dict
+        :param headers: dictionary of headers to expect. If omitted any headers will do
+
+        :type always: bool
+        :param always: if ``True`` this rule will not be removed after use
+
+        :rtype: Rule
+        :returns: newly created expectation rule
+        '''
+        return self._add_rule(_FilesExpectation(method, path, headers, files, form), always)
+
+    def _add_rule(self, expectation, always):
+        rule = Rule(expectation)
+        if always:
+            self._always_rules.append(rule)
+        else:
+            self._rules.append(rule)
         return rule
 
     def start(self):
@@ -253,21 +403,20 @@ class Server:
         :rtype: Server
         :returns: server instance for chaining
         '''
-        self._handler = _create_handler_class(self._rules, self._always_rules)
-        self._server = HTTPServer(('', self._port), self._handler)
-        self._thread = Thread(target=self._server.serve_forever, daemon=True)
+        app = tornado.web.Application([
+            (r'.*', _TornadoHandler, dict(rules=self._rules, always_rules=self._always_rules)),
+        ])
+        app.listen(self._port)
+        self._thread = Thread(target=tornado.ioloop.IOLoop.current().start, daemon=True)
         self._thread.start()
-        self.running = True
         return self
 
     def stop(self):
         '''
         Shuts the server down and waits for server thread to join
         '''
-        self._server.shutdown()
-        self._server.server_close()
+        tornado.ioloop.IOLoop.current().stop()
         self._thread.join()
-        self.running = False
 
     def reset(self):
         '''
@@ -299,57 +448,44 @@ class Server:
             raise PendingRequestsLeftException()
 
 
-def _create_handler_class(rules, always_rules):
-    class _Handler(BaseHTTPRequestHandler):
-        known_methods = set()
+class _TornadoHandler(tornado.web.RequestHandler):
+    # pylint: disable=w0223,w0221
 
-        @classmethod
-        def add_method(cls, method):
-            '''
-            Adds a handler function for HTTP method provided
-            '''
-            if method in cls.known_methods:
-                return
-            func = lambda self: cls._handle(self, method)
-            setattr(cls, 'do_' + method, func)
-            cls.known_methods.add(method)
+    def initialize(self, rules, always_rules):
+        self._rules = rules
+        self._always_rules = always_rules
 
-        def _read_body(self):
-            if 'content-length' in self.headers:
-                length = int(self.headers['content-length'])
-                return self.rfile.read(length) if length > 0 else None
-            return None
+    @coroutine
+    def prepare(self):
+        rule = self._find_rule(self._rules)
+        if rule:
+            # Order is important here - we should respond only after
+            # the rule is removed, or we may run into concurency issues
+            self._rules.remove(rule)
+            self._respond(rule.response)
+            return
+        always_rule = self._find_rule(self._always_rules)
+        if always_rule:
+            self._respond(always_rule.response)
+            return
+        self.set_status(500)
+        self.write(
+            'No matching rule found for ' +
+            self.request.uri + ' body ' +
+            str(self.request.body))
+        self.finish()
 
-        def _respond(self, response):
-            self.send_response(response.code)
-            for key, value in response.headers.items():
-                self.send_header(key, value)
-            self.end_headers()
-            if response.bytes:
-                self.wfile.write(response.bytes)
+    def _find_rule(self, rules):
+        matching_rules = [r for r in rules if r.matches(self.request)]
+        if matching_rules:
+            rule = matching_rules[0]
+            return rule
+        return None
 
-        def _handle(self, method):
-            body = self._read_body()
-            rule = self._respond_with_rules(method, body, rules)
-            if rule:
-                rules.remove(rule)
-                return
-            always_rule = self._respond_with_rules(method, body, always_rules)
-            if always_rule:
-                return
-            return self.send_error(
-                500, 'No matching rule found for ' + self.requestline + ' body ' + str(body))
-
-        def _respond_with_rules(self, method, body, rules):
-            matching_rules = [r for r in rules if r.matches(method, self.path, dict(self.headers), body)]
-            if matching_rules:
-                rule = matching_rules[0]
-                self._respond(rule.response)
-                return rule
-            return None
-
-
-    for rule in rules:
-        _Handler.add_method(rule.method)
-
-    return _Handler
+    def _respond(self, response):
+        self.set_status(response.code)
+        for key, value in response.headers.items():
+            self.set_header(key, value)
+        if response.bytes:
+            self.write(response.bytes)
+        self.finish()
